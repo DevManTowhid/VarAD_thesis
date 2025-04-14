@@ -1,0 +1,1 @@
+from .global_config import DATA_ROOT
