@@ -16,7 +16,7 @@ MVTEC_CLS_NAMES = [
 ]
 from config import DATA_ROOT
 
-MVTEC_ROOT = os.path.join(DATA_ROOT, 'mvtec_anomaly_detection')
+MVTEC_ROOT = os.path.join(DATA_ROOT, 'mvtec')
 
 class MVTecDataset(BaseDataset):
     def __init__(self, class_names, transform, target_transform,

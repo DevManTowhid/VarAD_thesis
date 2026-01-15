@@ -1,0 +1,16 @@
+{
+    "train": {
+        "toothbrush": {
+            "normal": "toothbrush/train/good",
+            "anomaly": []
+        }
+    },
+    "test": {
+        "toothbrush": {
+            "normal": "toothbrush/test/good",
+            "anomaly": {
+                "defective": "toothbrush/test/defective"
+            }
+        }
+    }
+}

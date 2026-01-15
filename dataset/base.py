@@ -82,37 +82,114 @@ class BaseDataset(data.Dataset):
 
         self.synthesis_anomalies = synthesis_anomalies
 
-    def _select_normal_from_train(self, meta_info: dict, k_shot):
-        normal_info = {}
-        for cls in meta_info.keys():
-            normal_info[cls] = []
-            for info in meta_info[cls]:
-                anomaly = info['anomaly']
-                if anomaly == 0:
-                    normal_info[cls].append(info)
+    def _select_normal_from_train(self, info, k):
+        import os
+        import glob
 
-            k = min(len(normal_info[cls]), k_shot)
+        # Helper to convert list of paths to the dictionary format the code wants
+        def to_dicts(path_list, cls_name):
+            res = []
+            for p in path_list:
+                res.append({
+                    'img_path': p,
+                    'mask_path': None,
+                    'cls_name': cls_name,
+                    'specie_name': 'normal',
+                    'anomaly': 0
+                })
+            return res
 
-            if k == 0:
-                return 0
+        # 1. Handle Dictionary Input (Recursive or Standard)
+        if isinstance(info, dict):
+            # If it's the top-level dict (e.g. {'toothbrush': ...}), recurse
+            if 'normal' not in info:
+                combined = {}
+                for key, val in info.items():
+                    combined[key] = self._select_normal_from_train(val, k)
+                # If the function expects a flat list return, we flatten it, 
+                # but if it expects a dict return, we keep it. 
+                # Based on your errors, we should return a Dictionary keyed by class.
+                return combined
 
-            normal_info[cls] = random.sample(normal_info[cls], k)
-        return normal_info
+            # If it's the inner dict (e.g. {'normal': 'path'}), extract path
+            path = info.get('normal', info)
+        else:
+            # If it's a string, just use it
+            path = info
+
+        # 2. RESOLVE PATH (The Fix for Duplication)
+        # We check if the path works AS IS before trying to join it with root.
+        if isinstance(path, str):
+            # Check 1: Is the path valid as-is? (e.g. "dataset/mvtec/toothbrush/...")
+            if os.path.exists(path):
+                full_dir = path
+            # Check 2: Do we need to add the root? (e.g. "toothbrush/...")
+            elif hasattr(self, 'root') and self.root and os.path.exists(os.path.join(self.root, path)):
+                full_dir = os.path.join(self.root, path)
+            else:
+                # Fallback: Assume root join is intended even if not found yet
+                full_dir = os.path.join(self.root, path) if hasattr(self, 'root') and self.root else path
+
+            # Scan for images
+            images = []
+            for ext in ['*.png', '*.jpg', '*.jpeg', '*.bmp', '*.tif']:
+                images.extend(glob.glob(os.path.join(full_dir, ext)))
+            images.sort()
+            
+            # Convert to Dictionaries
+            cls = self.class_names[0] if hasattr(self, 'class_names') and self.class_names else 'unknown'
+            data_list = to_dicts(images, cls)
+
+            if k > 0 and k < len(data_list):
+                return data_list[:k]
+            return data_list
+
+        # 3. Handle Lists (Legacy)
+        if isinstance(path, list):
+            # If list of strings, convert to dicts
+            if len(path) > 0 and isinstance(path[0], str):
+                cls = self.class_names[0] if hasattr(self, 'class_names') and self.class_names else 'unknown'
+                path = to_dicts(path, cls)
+            
+            return path[:k] if k > 0 else path
+            
+        return path
 
     def count_number(self, data):
-        normal_number = 0
-        abnormal_number = 0
-        for _data in data:
-            img_path, mask_path, cls_name, specie_name, anomaly = _data['img_path'], _data['mask_path'], _data['cls_name'], \
-                                                                  _data['specie_name'], _data['anomaly']
+        # 1. Initialize the CLASS variables (so they exist for the rest of the code)
+        self.normal_num = 0
+        self.abnormal_num = 0
+        self.abnormal_imgs = []
+
+        # 2. Sanitize the list (Fixes "string indices" error)
+        # If the input is just strings (file paths), turn them into the dictionaries the code expects
+        cleaned_data = []
+        default_cls = self.class_names[0] if hasattr(self, 'class_names') and self.class_names else 'unknown'
+        
+        for item in data:
+            if isinstance(item, str):
+                item = {
+                    'img_path': item,
+                    'mask_path': None,
+                    'cls_name': default_cls,
+                    'specie_name': 'normal',
+                    'anomaly': 0
+                }
+            cleaned_data.append(item)
+        
+        # 3. Count using the sanitized data
+        for _data in cleaned_data:
+            img_path = _data['img_path']
+            anomaly = _data['anomaly']
 
             if anomaly == 0:
-                normal_number += 1
+                self.normal_num += 1
             else:
-                abnormal_number += 1
+                self.abnormal_num += 1
+                self.abnormal_imgs.append(img_path)
 
-        print(f'Training: {self.training}, Normal: {normal_number}, Abnormal: {abnormal_number}')
-
+        # 4. Print stats using the class variables
+        print(f'Training: {self.training}, Normal: {self.normal_num}, Abnormal: {self.abnormal_num}')
     def combine_images(self, cls_name):
         img_info = random.sample(self.meta_info[cls_name], 4)
 
@@ -272,22 +349,42 @@ class BaseDataset(data.Dataset):
         data = self.data_all[index]
         img_path, mask_path, cls_name, specie_name, anomaly = data['img_path'], data['mask_path'], data['cls_name'], \
                                                               data['specie_name'], data['anomaly']
-        img = Image.open(os.path.join(self.root, img_path)).convert('RGB')
+
+        # --- FIX START: Resolve path BEFORE opening image ---
+        # 1. Determine the correct image path
+        if os.path.exists(img_path):
+            final_img_path = img_path
+        else:
+            final_img_path = os.path.join(self.root, img_path)
+
+        # 2. Determine the correct mask path (if it exists)
+        if mask_path is not None:
+            if os.path.exists(mask_path):
+                final_mask_path = mask_path
+            else:
+                final_mask_path = os.path.join(self.root, mask_path)
+        else:
+            final_mask_path = None
+        # --- FIX END ---------------------------------------
+
+        # Now open the image using the RESOLVED path
+        img = Image.open(final_img_path).convert('RGB')
+
         if anomaly == 0:
             img_mask = Image.fromarray(np.zeros((img.size[0], img.size[1])), mode='L')
         else:
-            img_mask = np.array(Image.open(os.path.join(self.root, mask_path)).convert('L')) > 0
+            # Use the resolved mask path here too
+            img_mask = np.array(Image.open(final_mask_path).convert('L')) > 0
             img_mask = Image.fromarray(img_mask.astype(np.uint8) * 255, mode='L')
 
         return_dict = {
             'specie_name': specie_name,
             'cls_name': cls_name,
             'anomaly': anomaly,
-            'img_path': os.path.join(self.root, img_path)
+            'img_path': final_img_path
         }
 
         if self.training and self.synthesis_anomalies:
-
             image, augmented_image, anomaly_mask, has_anomaly = self.transform_image(img)
 
             augmented_image = self.transform(augmented_image) if self.transform is not None else augmented_image
